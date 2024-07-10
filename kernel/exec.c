@@ -7,6 +7,8 @@
 #include "defs.h"
 #include "elf.h"
 
+extern struct proc proc[NPROC];
+
 static int loadseg(pde_t *pgdir, uint64 addr, struct inode *ip, uint offset, uint sz);
 
 int
@@ -14,7 +16,7 @@ exec(char *path, char **argv)
 {
   char *s, *last;
   int i, off;
-  uint64 argc, sz = 0, sp, ustack[MAXARG+1], stackbase;
+  uint64 argc, sz = 0, sp, ustack[MAXARG+1], stackbase, va = 0;
   struct elfhdr elf;
   struct inode *ip;
   struct proghdr ph;
@@ -34,10 +36,23 @@ exec(char *path, char **argv)
     goto bad;
   if(elf.magic != ELF_MAGIC)
     goto bad;
+//==========================================================
+  // if((pagetable = proc_pagetable(p)) == 0)
+  //   goto bad;
+  kvmprocess(&pagetable);
+  char *pa = kalloc();
+  if(pa == 0){
+    // freeproc(p);
+    release(&p->lock);
+    panic("kalloc in allocproc");
+    return 0;
+  }
+  va = KSTACK((int) (p - proc));
+  mappages(pagetable, va, PGSIZE, (uint64)pa, PTE_R | PTE_W);
+  // p->kstack = va;
 
-  if((pagetable = proc_pagetable(p)) == 0)
-    goto bad;
-
+  mappages(pagetable, TRAPFRAME, PGSIZE, (uint64)(p->trapframe), PTE_R | PTE_W);
+//==========================================================
   // Load program into memory.
   for(i=0, off=elf.phoff; i<elf.phnum; i++, off+=sizeof(ph)){
     if(readi(ip, 0, (uint64)&ph, off, sizeof(ph)) != sizeof(ph))
@@ -63,7 +78,7 @@ exec(char *path, char **argv)
 
   p = myproc();
   uint64 oldsz = p->sz;
-
+  uint64 oldva = p->kstack;
   // Allocate two pages at the next page boundary.
   // Use the second as the user stack.
   sz = PGROUNDUP(sz);
@@ -109,23 +124,50 @@ exec(char *path, char **argv)
   safestrcpy(p->name, last, sizeof(p->name));
     
   // Commit to the user image.
-  oldpagetable = p->pagetable;
-  p->pagetable = pagetable;
+  oldpagetable = p->k_pagetable;
+  p->k_pagetable = pagetable;
   p->sz = sz;
+  p->kstack = va;
   p->trapframe->epc = elf.entry;  // initial program counter = main
   p->trapframe->sp = sp; // initial stack pointer
-  proc_freepagetable(oldpagetable, oldsz);
+  freekpagetable(oldpagetable, oldva, oldsz);
+  vmprint(pagetable, 3);
 
   return argc; // this ends up in a0, the first argument to main(argc, argv)
 
  bad:
   if(pagetable)
-    proc_freepagetable(pagetable, sz);
+    freekpagetable(pagetable, va, sz);
   if(ip){
     iunlockput(ip);
     end_op();
   }
   return -1;
+}
+
+int
+vmprint(pagetable_t pagetable, int level){
+  if(level < 0)
+    return 0;
+
+  if(level == 3){
+    printf("page table %p\n", pagetable);
+    vmprint(pagetable, level-1);
+    return 0;
+  }
+
+  for(int index = 0; index < 512; index++){
+    pte_t *pte = &pagetable[index];
+    if(*pte & PTE_V){
+      for(int i = 0; i < 3 - level; i++){
+        printf(" ");
+      }
+      pagetable_t pagetable_nextLevel = (pagetable_t)PTE2PA(*pte);
+      printf("%d: pte %p *pte %p pa %p\n", index, pte, *pte, pagetable_nextLevel);
+      vmprint(pagetable_nextLevel, level-1);
+    }
+  }
+  return 0;
 }
 
 // Load a program segment into pagetable at virtual address va.

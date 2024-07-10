@@ -6,6 +6,8 @@
 #include "proc.h"
 #include "defs.h"
 
+extern pagetable_t kernel_pagetable;
+
 struct cpu cpus[NCPU];
 
 struct proc proc[NPROC];
@@ -15,6 +17,7 @@ struct proc *initproc;
 int nextpid = 1;
 struct spinlock pid_lock;
 
+extern char etext[];
 extern void forkret(void);
 static void wakeup1(struct proc *chan);
 static void freeproc(struct proc *p);
@@ -114,13 +117,29 @@ found:
   }
 
   // An empty user page table.
-  p->pagetable = proc_pagetable(p);
-  if(p->pagetable == 0){
+  // p->pagetable = proc_pagetable(p);
+  // if(p->pagetable == 0){
+  //   freeproc(p);
+  //   release(&p->lock);
+  //   return 0;
+  // }
+//==========================================================
+  kvmprocess(&(p->k_pagetable));
+  // vmprint(p->k_pagetable, 3);
+  // printf("kernel page table %p\n", p->k_pagetable);
+  char *pa = kalloc();
+  if(pa == 0){
     freeproc(p);
     release(&p->lock);
+    // panic("kalloc in allocproc");
     return 0;
   }
+  uint64 va = KSTACK((int) (p - proc));
+  mappages(p->k_pagetable, va, PGSIZE, (uint64)pa, PTE_R | PTE_W);
+  p->kstack = va;
 
+  mappages(p->k_pagetable, TRAPFRAME, PGSIZE, (uint64)(p->trapframe), PTE_R | PTE_W);
+//==========================================================
   // Set up new context to start executing at forkret,
   // which returns to user space.
   memset(&p->context, 0, sizeof(p->context));
@@ -129,6 +148,37 @@ found:
 
   return p;
 }
+
+// static void freekpagetable(pagetable_t k_pagetable, int level){
+void freekpagetable(pagetable_t k_pagetable, uint64 kstack, uint64 sz){
+  // if(level < 0)
+  //   return;
+
+  // for(int i = 0; i < 512; i++){
+  //   pte_t pte = k_pagetable[i];
+  //   if(pte & PTE_V){
+  //     uint64 child = PTE2PA(pte);
+  //     freekpagetable((pagetable_t)child, level-1);
+  //     k_pagetable[i] = 0;
+  //   }
+  // }
+  // // printf("level: %d, page table %p\n", level, k_pagetable);
+  // kfree((void*)k_pagetable);
+
+  uvmunmap(k_pagetable, UART0, 1, 0);
+  uvmunmap(k_pagetable, VIRTIO0, 1, 0);
+  uvmunmap(k_pagetable, CLINT, 0x10000/PGSIZE, 0);
+  uvmunmap(k_pagetable, PLIC, 0x400000/PGSIZE, 0);
+  uvmunmap(k_pagetable, KERNBASE, ((uint64)etext-KERNBASE)/PGSIZE, 0);
+  uvmunmap(k_pagetable, (uint64)etext, (PHYSTOP-(uint64)etext)/PGSIZE, 0);
+  uvmunmap(k_pagetable, TRAMPOLINE, 1, 0);
+  if(kstack)
+    uvmunmap(k_pagetable, kstack, 1, 1);
+  if(sz)
+    uvmunmap(k_pagetable, 0, sz/PGSIZE, 1);
+  freewalk(k_pagetable);
+}
+
 
 // free a proc structure and the data hanging from it,
 // including user pages.
@@ -141,6 +191,12 @@ freeproc(struct proc *p)
   p->trapframe = 0;
   if(p->pagetable)
     proc_freepagetable(p->pagetable, p->sz);
+
+  if(p->k_pagetable){
+    freekpagetable(p->k_pagetable, p->kstack, p->sz);
+  }
+  p->k_pagetable = 0;
+
   p->pagetable = 0;
   p->sz = 0;
   p->pid = 0;
@@ -218,7 +274,7 @@ userinit(void)
   
   // allocate one user page and copy init's instructions
   // and data into it.
-  uvminit(p->pagetable, initcode, sizeof(initcode));
+  uvminit(p->k_pagetable, initcode, sizeof(initcode));
   p->sz = PGSIZE;
 
   // prepare for the very first "return" from kernel to user.
@@ -229,7 +285,8 @@ userinit(void)
   p->cwd = namei("/");
 
   p->state = RUNNABLE;
-
+  
+  // vmprint(p->k_pagetable, 3);
   release(&p->lock);
 }
 
@@ -242,12 +299,14 @@ growproc(int n)
   struct proc *p = myproc();
 
   sz = p->sz;
+  if(sz+n >= PLIC)
+    return -1;
   if(n > 0){
-    if((sz = uvmalloc(p->pagetable, sz, sz + n)) == 0) {
+    if((sz = uvmalloc(p->k_pagetable, sz, sz + n)) == 0) {
       return -1;
     }
   } else if(n < 0){
-    sz = uvmdealloc(p->pagetable, sz, sz + n);
+    sz = uvmdealloc(p->k_pagetable, sz, sz + n);
   }
   p->sz = sz;
   return 0;
@@ -268,7 +327,7 @@ fork(void)
   }
 
   // Copy user memory from parent to child.
-  if(uvmcopy(p->pagetable, np->pagetable, p->sz) < 0){
+  if(uvmcopy(p->k_pagetable, np->k_pagetable, p->sz) < 0){
     freeproc(np);
     release(&np->lock);
     return -1;
@@ -473,7 +532,14 @@ scheduler(void)
         // before jumping back to us.
         p->state = RUNNING;
         c->proc = p;
+        
+        w_satp(MAKE_SATP(p->k_pagetable));
+        sfence_vma();
+
         swtch(&c->context, &p->context);
+
+        w_satp(MAKE_SATP(kernel_pagetable));
+        sfence_vma();
 
         // Process is done running for now.
         // It should have changed its p->state before coming back.

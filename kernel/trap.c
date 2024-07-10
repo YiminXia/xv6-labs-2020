@@ -119,7 +119,8 @@ usertrapret(void)
   w_sepc(p->trapframe->epc);
 
   // tell trampoline.S the user page table to switch to.
-  uint64 satp = MAKE_SATP(p->pagetable);
+  // uint64 satp = MAKE_SATP(p->pagetable);
+  uint64 satp = MAKE_SATP(p->k_pagetable);
 
   // jump to trampoline.S at the top of memory, which 
   // switches to the user page table, restores user registers,
