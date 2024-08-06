@@ -117,28 +117,27 @@ found:
   }
 
   // An empty user page table.
-  // p->pagetable = proc_pagetable(p);
-  // if(p->pagetable == 0){
-  //   freeproc(p);
-  //   release(&p->lock);
-  //   return 0;
-  // }
+  p->pagetable = proc_pagetable(p);
+  if(p->pagetable == 0){
+    freeproc(p);
+    release(&p->lock);
+    return 0;
+  }
 //==========================================================
   kvmprocess(&(p->k_pagetable));
   // vmprint(p->k_pagetable, 3);
   // printf("kernel page table %p\n", p->k_pagetable);
   char *pa = kalloc();
-  if(pa == 0){
-    freeproc(p);
-    release(&p->lock);
-    // panic("kalloc in allocproc");
-    return 0;
-  }
+  // if((uint64)pa > 0x0000000086400000)
+  //   printf("kstack pa: %p\n", (uint64)pa);
+  if(pa == 0)
+    panic("kalloc in allocproc");
   uint64 va = KSTACK((int) (p - proc));
+  // uint64 va = KSTACK(0);
   mappages(p->k_pagetable, va, PGSIZE, (uint64)pa, PTE_R | PTE_W);
   p->kstack = va;
 
-  mappages(p->k_pagetable, TRAPFRAME, PGSIZE, (uint64)(p->trapframe), PTE_R | PTE_W);
+  // mappages(p->k_pagetable, TRAPFRAME, PGSIZE, (uint64)(p->trapframe), PTE_R | PTE_W);
 //==========================================================
   // Set up new context to start executing at forkret,
   // which returns to user space.
@@ -165,18 +164,16 @@ void freekpagetable(pagetable_t k_pagetable, uint64 kstack, uint64 sz){
   // // printf("level: %d, page table %p\n", level, k_pagetable);
   // kfree((void*)k_pagetable);
 
+  if (sz > 0)
+    uvmunmap(k_pagetable, 0, PGROUNDUP(sz)/PGSIZE, 0);
   uvmunmap(k_pagetable, UART0, 1, 0);
   uvmunmap(k_pagetable, VIRTIO0, 1, 0);
-  uvmunmap(k_pagetable, CLINT, 0x10000/PGSIZE, 0);
+  // uvmunmap(k_pagetable, CLINT, 0x10000/PGSIZE, 0);
   uvmunmap(k_pagetable, PLIC, 0x400000/PGSIZE, 0);
-  uvmunmap(k_pagetable, KERNBASE, ((uint64)etext-KERNBASE)/PGSIZE, 0);
-  uvmunmap(k_pagetable, (uint64)etext, (PHYSTOP-(uint64)etext)/PGSIZE, 0);
+  uvmunmap(k_pagetable, KERNBASE, (PHYSTOP-KERNBASE) / PGSIZE, 0);
   uvmunmap(k_pagetable, TRAMPOLINE, 1, 0);
-  if(kstack)
-    uvmunmap(k_pagetable, kstack, 1, 1);
-  if(sz)
-    uvmunmap(k_pagetable, 0, sz/PGSIZE, 1);
-  freewalk(k_pagetable);
+  uvmunmap(k_pagetable, kstack, 1, 1);
+  uvmfree(k_pagetable, 0);
 }
 
 
@@ -274,8 +271,10 @@ userinit(void)
   
   // allocate one user page and copy init's instructions
   // and data into it.
-  uvminit(p->k_pagetable, initcode, sizeof(initcode));
+  uvminit(p->pagetable, initcode, sizeof(initcode));
   p->sz = PGSIZE;
+
+  copyPTEFromU2K(p->pagetable, p->k_pagetable, 0, p->sz);
 
   // prepare for the very first "return" from kernel to user.
   p->trapframe->epc = 0;      // user program counter
@@ -299,15 +298,19 @@ growproc(int n)
   struct proc *p = myproc();
 
   sz = p->sz;
-  if(sz+n >= PLIC)
-    return -1;
   if(n > 0){
-    if((sz = uvmalloc(p->k_pagetable, sz, sz + n)) == 0) {
+    if(sz+n >= PLIC)
+      return -1;
+    if((sz = uvmalloc(p->pagetable, sz, sz + n)) == 0) {
       return -1;
     }
+
+    copyPTEFromU2K(p->pagetable, p->k_pagetable, p->sz, sz);
   } else if(n < 0){
-    sz = uvmdealloc(p->k_pagetable, sz, sz + n);
+    sz = uvmdealloc(p->pagetable, sz, sz + n);
+    uvmunmap(p->k_pagetable, PGROUNDUP(sz), (PGROUNDUP(p->sz)-PGROUNDUP(sz))/PGSIZE, 0);
   }
+  // copyPTEFromU2K(p->pagetable, p->k_pagetable, 0, sz);
   p->sz = sz;
   return 0;
 }
@@ -327,12 +330,18 @@ fork(void)
   }
 
   // Copy user memory from parent to child.
-  if(uvmcopy(p->k_pagetable, np->k_pagetable, p->sz) < 0){
+  if(uvmcopy(p->pagetable, np->pagetable, p->sz) < 0){
     freeproc(np);
     release(&np->lock);
     return -1;
   }
   np->sz = p->sz;
+  copyPTEFromU2K(np->pagetable, np->k_pagetable, 0, np->sz);
+  // if(copyPTEFromU2K(np->pagetable, np->k_pagetable, 0, np->sz) < 0){
+  //   freeproc(np);
+  //   release(&np->lock);
+  //   return -1;
+  // }
 
   np->parent = p;
 
@@ -536,6 +545,7 @@ scheduler(void)
         w_satp(MAKE_SATP(p->k_pagetable));
         sfence_vma();
 
+        // printf("schduler: pid:%d\n", p->pid);
         swtch(&c->context, &p->context);
 
         w_satp(MAKE_SATP(kernel_pagetable));
@@ -583,6 +593,7 @@ sched(void)
     panic("sched interruptible");
 
   intena = mycpu()->intena;
+  // printf("sched: pid:%d\n", p->pid);
   swtch(&p->context, &mycpu()->context);
   mycpu()->intena = intena;
 }

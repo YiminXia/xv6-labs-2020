@@ -16,7 +16,7 @@ exec(char *path, char **argv)
 {
   char *s, *last;
   int i, off;
-  uint64 argc, sz = 0, sp, ustack[MAXARG+1], stackbase, va = 0;
+  uint64 argc, sz = 0, sp, ustack[MAXARG+1], stackbase;
   struct elfhdr elf;
   struct inode *ip;
   struct proghdr ph;
@@ -37,21 +37,21 @@ exec(char *path, char **argv)
   if(elf.magic != ELF_MAGIC)
     goto bad;
 //==========================================================
-  // if((pagetable = proc_pagetable(p)) == 0)
-  //   goto bad;
-  kvmprocess(&pagetable);
-  char *pa = kalloc();
-  if(pa == 0){
-    // freeproc(p);
-    release(&p->lock);
-    panic("kalloc in allocproc");
-    return 0;
-  }
-  va = KSTACK((int) (p - proc));
-  mappages(pagetable, va, PGSIZE, (uint64)pa, PTE_R | PTE_W);
-  // p->kstack = va;
+  if((pagetable = proc_pagetable(p)) == 0)
+    goto bad;
+  // kvmprocess(&pagetable);
+  // char *pa = kalloc();
+  // if(pa == 0){
+  //   // freeproc(p);
+  //   release(&p->lock);
+  //   panic("kalloc in allocproc");
+  //   return 0;
+  // }
+  // va = KSTACK((int) (p - proc));
+  // mappages(pagetable, va, PGSIZE, (uint64)pa, PTE_R | PTE_W);
+  // // p->kstack = va;
 
-  mappages(pagetable, TRAPFRAME, PGSIZE, (uint64)(p->trapframe), PTE_R | PTE_W);
+  // mappages(pagetable, TRAPFRAME, PGSIZE, (uint64)(p->trapframe), PTE_R | PTE_W);
 //==========================================================
   // Load program into memory.
   for(i=0, off=elf.phoff; i<elf.phnum; i++, off+=sizeof(ph)){
@@ -66,6 +66,8 @@ exec(char *path, char **argv)
     uint64 sz1;
     if((sz1 = uvmalloc(pagetable, sz, ph.vaddr + ph.memsz)) == 0)
       goto bad;
+    if(sz1 > PLIC)
+      goto bad;
     sz = sz1;
     if(ph.vaddr % PGSIZE != 0)
       goto bad;
@@ -78,7 +80,7 @@ exec(char *path, char **argv)
 
   p = myproc();
   uint64 oldsz = p->sz;
-  uint64 oldva = p->kstack;
+
   // Allocate two pages at the next page boundary.
   // Use the second as the user stack.
   sz = PGROUNDUP(sz);
@@ -122,22 +124,23 @@ exec(char *path, char **argv)
     if(*s == '/')
       last = s+1;
   safestrcpy(p->name, last, sizeof(p->name));
-    
+  
   // Commit to the user image.
-  oldpagetable = p->k_pagetable;
-  p->k_pagetable = pagetable;
+  oldpagetable = p->pagetable;
+  p->pagetable = pagetable;
   p->sz = sz;
-  p->kstack = va;
   p->trapframe->epc = elf.entry;  // initial program counter = main
   p->trapframe->sp = sp; // initial stack pointer
-  freekpagetable(oldpagetable, oldva, oldsz);
+  proc_freepagetable(oldpagetable, oldsz);
   vmprint(pagetable, 3);
+  uvmunmap(p->k_pagetable, 0, PGROUNDUP(oldsz)/PGSIZE, 0);
+  copyPTEFromU2K(p->pagetable, p->k_pagetable, 0, p->sz);
 
   return argc; // this ends up in a0, the first argument to main(argc, argv)
 
  bad:
   if(pagetable)
-    freekpagetable(pagetable, va, sz);
+    proc_freepagetable(pagetable, sz);
   if(ip){
     iunlockput(ip);
     end_op();
@@ -160,10 +163,12 @@ vmprint(pagetable_t pagetable, int level){
     pte_t *pte = &pagetable[index];
     if(*pte & PTE_V){
       for(int i = 0; i < 3 - level; i++){
-        printf(" ");
+        printf("..");
+        if(i < 3-level-1)
+          printf(" ");
       }
       pagetable_t pagetable_nextLevel = (pagetable_t)PTE2PA(*pte);
-      printf("%d: pte %p *pte %p pa %p\n", index, pte, *pte, pagetable_nextLevel);
+      printf("%d: pte %p pa %p\n", index, *pte, pagetable_nextLevel);
       vmprint(pagetable_nextLevel, level-1);
     }
   }

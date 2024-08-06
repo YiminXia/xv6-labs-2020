@@ -60,7 +60,7 @@ kvmprocess(pagetable_t* pk_pagetable){
 
   mappages(*pk_pagetable, VIRTIO0, PGSIZE, VIRTIO0, PTE_R | PTE_W);
 
-  mappages(*pk_pagetable, CLINT, 0x10000, CLINT, PTE_R | PTE_W);
+  // mappages(*pk_pagetable, CLINT, 0x10000, CLINT, PTE_R | PTE_W);
 
   mappages(*pk_pagetable, PLIC, 0x400000, PLIC, PTE_R | PTE_W);
 
@@ -111,6 +111,32 @@ walk(pagetable_t pagetable, uint64 va, int alloc)
     }
   }
   return &pagetable[PX(0, va)];
+}
+
+void
+copyPTEFromU2K(pagetable_t pagetable, pagetable_t kpagetable, uint64 begin, uint64 end)
+{
+  pte_t *pte;
+  uint64 pa, i;
+  uint flags;
+  uint64 begin_page = PGROUNDUP(begin);
+  for(i = begin_page; i < end; i += PGSIZE){
+    if((pte = walk(pagetable, i, 0)) == 0)
+      panic("vmukmap: pte should exist");
+    if((*pte & PTE_V) == 0)
+      panic("vmukmap: page not present");
+    pa = PTE2PA(*pte);
+    flags = PTE_FLAGS(*pte) & ~PTE_U;
+
+    if(mappages(kpagetable, i, PGSIZE, pa, flags) != 0)
+      goto err;
+  }
+  return;
+
+ err:
+  uvmunmap(kpagetable, begin_page, (i - begin_page) / PGSIZE, 1);
+  panic("sth wrong in copyPTEFromU2K");
+  return;
 }
 
 // Look up a virtual address, return the physical address,
@@ -178,6 +204,8 @@ mappages(pagetable_t pagetable, uint64 va, uint64 size, uint64 pa, int perm)
 
   a = PGROUNDDOWN(va);
   last = PGROUNDDOWN(va + size - 1);
+  // if(pa == 0x0000000087d7e000)
+  //   printf("mappages: va:%p, pa:%p\n", va, pa);
   for(;;){
     if((pte = walk(pagetable, a, 1)) == 0)
       return -1;
@@ -211,8 +239,12 @@ uvmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free)
       panic("uvmunmap: not mapped");
     if(PTE_FLAGS(*pte) == PTE_V)
       panic("uvmunmap: not a leaf");
+    // if(PTE2PA(*pte) == 0x0000000087d7e000)
+    //     printf("uvmunmap va:%p,\n",a);
     if(do_free){
       uint64 pa = PTE2PA(*pte);
+      // if(pa == 0x0000000087d7e000)
+      //   printf("dofree va:%p, pa: %p\n",a, pa);
       kfree((void*)pa);
     }
     *pte = 0;
@@ -244,8 +276,8 @@ uvminit(pagetable_t pagetable, uchar *src, uint sz)
     panic("inituvm: more than a page");
   mem = kalloc();
   memset(mem, 0, PGSIZE);
-  // mappages(pagetable, 0, PGSIZE, (uint64)mem, PTE_W|PTE_R|PTE_X|PTE_U);
-  mappages(pagetable, 0, PGSIZE, (uint64)mem, PTE_W|PTE_R|PTE_X);
+  mappages(pagetable, 0, PGSIZE, (uint64)mem, PTE_W|PTE_R|PTE_X|PTE_U);
+  // mappages(pagetable, 0, PGSIZE, (uint64)mem, PTE_W|PTE_R|PTE_X);
   memmove(mem, src, sz);
 }
 
@@ -309,6 +341,7 @@ freewalk(pagetable_t pagetable)
       freewalk((pagetable_t)child);
       pagetable[i] = 0;
     } else if(pte & PTE_V){
+      printf("freewalk: %p\n", PTE2PA(pte));
       panic("freewalk: leaf");
     }
   }
@@ -423,8 +456,8 @@ copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
   // }
   // return 0;
 
-  copyin_new(pagetable, dst, srcva, len);
-  return 0;
+  return copyin_new(pagetable, dst, srcva, len);
+
 }
 
 // Copy a null-terminated string from user to kernel.
@@ -434,38 +467,39 @@ copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
 int
 copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
 {
-  uint64 n, va0, pa0;
-  int got_null = 0;
+  // uint64 n, va0, pa0;
+  // int got_null = 0;
 
-  while(got_null == 0 && max > 0){
-    va0 = PGROUNDDOWN(srcva);
-    pa0 = walkaddr(pagetable, va0);
-    if(pa0 == 0)
-      return -1;
-    n = PGSIZE - (srcva - va0);
-    if(n > max)
-      n = max;
+  // while(got_null == 0 && max > 0){
+  //   va0 = PGROUNDDOWN(srcva);
+  //   pa0 = walkaddr(pagetable, va0);
+  //   if(pa0 == 0)
+  //     return -1;
+  //   n = PGSIZE - (srcva - va0);
+  //   if(n > max)
+  //     n = max;
 
-    char *p = (char *) (pa0 + (srcva - va0));
-    while(n > 0){
-      if(*p == '\0'){
-        *dst = '\0';
-        got_null = 1;
-        break;
-      } else {
-        *dst = *p;
-      }
-      --n;
-      --max;
-      p++;
-      dst++;
-    }
+  //   char *p = (char *) (pa0 + (srcva - va0));
+  //   while(n > 0){
+  //     if(*p == '\0'){
+  //       *dst = '\0';
+  //       got_null = 1;
+  //       break;
+  //     } else {
+  //       *dst = *p;
+  //     }
+  //     --n;
+  //     --max;
+  //     p++;
+  //     dst++;
+  //   }
 
-    srcva = va0 + PGSIZE;
-  }
-  if(got_null){
-    return 0;
-  } else {
-    return -1;
-  }
+  //   srcva = va0 + PGSIZE;
+  // }
+  // if(got_null){
+  //   return 0;
+  // } else {
+  //   return -1;
+  // }
+  return copyinstr_new(pagetable, dst, srcva, max);
 }
