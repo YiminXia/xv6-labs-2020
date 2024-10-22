@@ -62,6 +62,7 @@ sys_sleep(void)
     return -1;
   acquire(&tickslock);
   ticks0 = ticks;
+  backtrace();
   while(ticks - ticks0 < n){
     if(myproc()->killed){
       release(&tickslock);
@@ -70,6 +71,46 @@ sys_sleep(void)
     sleep(&ticks, &tickslock);
   }
   release(&tickslock);
+  return 0;
+}
+
+uint64
+sys_sigalarm(void)
+{
+  int n;
+  uint64 handler;
+  if(argint(0, &n) < 0 || argaddr(1, &handler) < 0)
+    return -1;
+  struct proc *p = myproc();
+  // printf("sys_sigalarm:%d\n", n);
+  if(n > 0){
+    p->ticks = 0;
+    p->interval = n;
+    p->handler = handler;
+    p->alarmworking = 0;
+    if((p->alarmfram = (struct trapframe *)kalloc()) == 0)
+      return -1;
+    // printf("sys_sigalarm:%p\n", p->handler);
+  }else {
+    p->ticks = 10000;
+    p->interval = 0;
+    p->handler = 0;
+    p->epc = 0;
+  }
+
+  return 0;
+}
+
+uint64
+sys_sigreturn(void)
+{
+  struct proc *p = myproc();
+  if(p->alarmworking == 1){
+    memmove(p->trapframe,p->alarmfram, sizeof(struct trapframe));
+    p->trapframe->epc = p->epc;
+    p->alarmworking = 0;
+  }
+  // printf("sigreturn:%p\n", p->trapframe->epc);
   return 0;
 }
 

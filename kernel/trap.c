@@ -52,7 +52,7 @@ usertrap(void)
   
   if(r_scause() == 8){
     // system call
-
+    // printf("usertrap[syscall:%d]:%s, %d\n", p->trapframe->a7, p->name, p->pid);
     if(p->killed)
       exit(-1);
 
@@ -77,8 +77,23 @@ usertrap(void)
     exit(-1);
 
   // give up the CPU if this is a timer interrupt.
-  if(which_dev == 2)
+  if(which_dev == 2){
+    // printf("usertrap[timer:%d, %d]:%s, %d\n", p->trapframe->a7, p->ticks, p->name, p->pid);
+    int interval = p->interval;
+    //if(interval > 0 && p->alarmworking == 0){
+    if(interval > 0 && p->alarmworking == 0){
+      p->ticks += 1;
+      if(interval == p->ticks){
+        memmove(p->alarmfram, p->trapframe, sizeof(struct trapframe));
+        p->epc = p->trapframe->epc;
+        p->trapframe->epc = p->handler;
+        // printf("usertrap:%d, %d\n", interval, p->ticks);
+        p->alarmworking = 1;
+        p->ticks = 0;
+      }
+    }
     yield();
+  }
 
   usertrapret();
 }
@@ -150,8 +165,10 @@ kerneltrap()
   }
 
   // give up the CPU if this is a timer interrupt.
-  if(which_dev == 2 && myproc() != 0 && myproc()->state == RUNNING)
+  if(which_dev == 2 && myproc() != 0 && myproc()->state == RUNNING){
+    // printf("the timer interrupt is working\n");
     yield();
+  }
 
   // the yield() may have caused some traps to occur,
   // so restore trap registers for use by kernelvec.S's sepc instruction.

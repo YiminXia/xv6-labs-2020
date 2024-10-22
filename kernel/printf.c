@@ -16,6 +16,7 @@
 #include "proc.h"
 
 volatile int panicked = 0;
+extern pagetable_t kernel_pagetable;
 
 // lock to avoid interleaving concurrent printf's.
 static struct {
@@ -131,4 +132,19 @@ printfinit(void)
 {
   initlock(&pr.lock, "pr");
   pr.locking = 1;
+}
+
+void
+backtrace(void)
+{
+  printf("backtrace:\n");
+  uint64 currfp = r_fp();
+  while(PGROUNDUP(currfp) > currfp){
+    // struct proc *p = myproc();
+    uint64 *pra = (uint64*)currfp - 1;
+    printf("%p\n", pwalkaddr(kernel_pagetable, (*pra)));
+    // printf("%p\n", currfp);
+    uint64* ppf = (uint64*)currfp - 2;
+    currfp = *ppf;
+  }
 }
