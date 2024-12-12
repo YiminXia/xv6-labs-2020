@@ -65,7 +65,32 @@ usertrap(void)
     intr_on();
 
     syscall();
-  } else if((which_dev = devintr()) != 0){
+  } else if(r_scause() == 13 || r_scause() == 15 ){
+    // printf("usertrap(): page fault scause %p pid=%d\n", r_scause(), p->pid);
+    // printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
+    // int flag = 0;
+    // vmprint(p->pagetable, 2, &flag);
+    uint64 va = r_stval();
+    if(va >= p->sz || va < p->trapframe->sp){
+      printf("usertrap(): va >= p->sz kill the pthread\n");
+      p->killed = 1;
+      goto exits;
+    }
+    uint64 down_va = PGROUNDDOWN(va);
+    char* mem = kalloc();
+    if(mem == 0){
+      printf("usertrap(): kalloc return 0\n");
+      p->killed = 1;
+      goto exits;
+    }
+
+    memset(mem, 0, PGSIZE);
+    if(mappages(p->pagetable, down_va, PGSIZE, (uint64)mem, PTE_W|PTE_X|PTE_R|PTE_U) != 0){
+      kfree(mem);
+      panic("usertrap: mappages get failed");
+    }
+
+  }else if((which_dev = devintr()) != 0){
     // ok
   } else {
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
@@ -73,6 +98,7 @@ usertrap(void)
     p->killed = 1;
   }
 
+exits:
   if(p->killed)
     exit(-1);
 
