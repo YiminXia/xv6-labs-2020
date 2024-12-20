@@ -5,6 +5,8 @@
 #include "riscv.h"
 #include "defs.h"
 #include "fs.h"
+#include "spinlock.h"
+#include "proc.h"
 
 /*
  * the kernel's page table.
@@ -97,10 +99,35 @@ walkaddr(pagetable_t pagetable, uint64 va)
   pte_t *pte;
   uint64 pa;
 
+  struct proc *p = myproc();
+
   if(va >= MAXVA)
     return 0;
 
   pte = walk(pagetable, va, 0);
+  if((*pte & PTE_RSW)){
+    if(va >= p->sz)
+      return 0;
+    uint64 down_va = PGROUNDDOWN(va);
+    char* mem = kalloc();
+    if(mem == 0){
+      printf("walkaddr: kalloc return 0\n");
+      p->killed = 1;
+      return 0;
+    }
+    uint flags = (PTE_FLAGS(*pte) | PTE_W) & (~PTE_RSW);
+    memset(mem, 0, PGSIZE);
+    // printf("flags:%d\n", flags);
+    *pte = 0;
+    if(mappages(pagetable, down_va, PGSIZE, (uint64)mem, flags) != 0){
+      kfree(mem);
+      printf("walkaddr: mappages return failed\n");
+      return 0;
+    }
+    pte = walk(pagetable, va, 0);
+  }
+  
+  
   if(pte == 0)
     return 0;
   if((*pte & PTE_V) == 0)
@@ -108,6 +135,7 @@ walkaddr(pagetable_t pagetable, uint64 va)
   if((*pte & PTE_U) == 0)
     return 0;
   pa = PTE2PA(*pte);
+  // printf("pa:%p\n", pa);
   return pa;
 }
 
@@ -311,7 +339,7 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
   pte_t *pte;
   uint64 pa, i;
   uint flags;
-  char *mem;
+  // char *mem;
 
   for(i = 0; i < sz; i += PGSIZE){
     if((pte = walk(old, i, 0)) == 0)
@@ -319,14 +347,21 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
     if((*pte & PTE_V) == 0)
       panic("uvmcopy: page not present");
     pa = PTE2PA(*pte);
-    flags = PTE_FLAGS(*pte);
-    if((mem = kalloc()) == 0)
-      goto err;
-    memmove(mem, (char*)pa, PGSIZE);
-    if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
-      kfree(mem);
+    flags = PTE_FLAGS(*pte) & 0x3fb;
+    // *pte = (*pte) & 0x3fb;
+    *pte = PA2PTE(pa) | flags | PTE_RSW;
+    // if((mem = kalloc()) == 0)
+    //   goto err;
+    // memmove(mem, (char*)pa, PGSIZE);
+    
+    // mappages设置成PTE_RSW
+    // printf("flags:%d, *pte: %d\n",flags|PTE_RSW, *pte);
+    if(mappages(new, i, PGSIZE, (uint64)pa, flags|PTE_RSW) != 0){
+      kfree((void*)pa);
       goto err;
     }
+    int rc = getrc((uint64)pa);
+    setrc((uint64)pa, rc+1);
   }
   return 0;
 
@@ -359,13 +394,14 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
   while(len > 0){
     va0 = PGROUNDDOWN(dstva);
     pa0 = walkaddr(pagetable, va0);
+    // printf("pa0:%d\n", pa0);
     if(pa0 == 0)
       return -1;
     n = PGSIZE - (dstva - va0);
     if(n > len)
       n = len;
     memmove((void *)(pa0 + (dstva - va0)), src, n);
-
+    
     len -= n;
     src += n;
     dstva = va0 + PGSIZE;

@@ -12,6 +12,7 @@ static int loadseg(pde_t *pgdir, uint64 addr, struct inode *ip, uint offset, uin
 int
 exec(char *path, char **argv)
 {
+  
   char *s, *last;
   int i, off;
   uint64 argc, sz = 0, sp, ustack[MAXARG+1], stackbase;
@@ -20,7 +21,7 @@ exec(char *path, char **argv)
   struct proghdr ph;
   pagetable_t pagetable = 0, oldpagetable;
   struct proc *p = myproc();
-
+  printf("exec:0 p->name:%s, p->pid:%d, path:%s\n", p->name, p->pid, path);
   begin_op();
 
   if((ip = namei(path)) == 0){
@@ -28,16 +29,20 @@ exec(char *path, char **argv)
     return -1;
   }
   ilock(ip);
-
+  
   // Check ELF header
   if(readi(ip, 0, (uint64)&elf, 0, sizeof(elf)) != sizeof(elf))
     goto bad;
-  if(elf.magic != ELF_MAGIC)
+  
+  if(elf.magic != ELF_MAGIC){
+    printf("exec:0.5 p->name:%s, p->pid:%d, path:%s\n", p->name, p->pid, path);
     goto bad;
-
+  }
+    
+  
   if((pagetable = proc_pagetable(p)) == 0)
     goto bad;
-
+  
   // Load program into memory.
   for(i=0, off=elf.phoff; i<elf.phnum; i++, off+=sizeof(ph)){
     if(readi(ip, 0, (uint64)&ph, off, sizeof(ph)) != sizeof(ph))
@@ -57,6 +62,7 @@ exec(char *path, char **argv)
     if(loadseg(pagetable, ph.vaddr, ip, ph.off, ph.filesz) < 0)
       goto bad;
   }
+  printf("exec:1 p->name:%s, p->pid:%d\n", p->name, p->pid);
   iunlockput(ip);
   end_op();
   ip = 0;
@@ -74,7 +80,7 @@ exec(char *path, char **argv)
   uvmclear(pagetable, sz-2*PGSIZE);
   sp = sz;
   stackbase = sp - PGSIZE;
-
+  printf("exec:2 p->name:%s, p->pid:%d\n", p->name, p->pid);
   // Push argument strings, prepare rest of stack in ustack.
   for(argc = 0; argv[argc]; argc++) {
     if(argc >= MAXARG)
@@ -88,7 +94,7 @@ exec(char *path, char **argv)
     ustack[argc] = sp;
   }
   ustack[argc] = 0;
-
+  printf("exec:3 p->name:%s, p->pid:%d\n", p->name, p->pid);
   // push the array of argv[] pointers.
   sp -= (argc+1) * sizeof(uint64);
   sp -= sp % 16;
@@ -96,7 +102,7 @@ exec(char *path, char **argv)
     goto bad;
   if(copyout(pagetable, sp, (char *)ustack, (argc+1)*sizeof(uint64)) < 0)
     goto bad;
-
+  printf("exec:4 p->name:%s, p->pid:%d\n", p->name, p->pid);
   // arguments to user main(argc, argv)
   // argc is returned via the system call return
   // value, which goes in a0.
@@ -107,7 +113,7 @@ exec(char *path, char **argv)
     if(*s == '/')
       last = s+1;
   safestrcpy(p->name, last, sizeof(p->name));
-    
+  printf("exec:5 p->name:%s, p->pid:%d\n", p->name, p->pid);
   // Commit to the user image.
   oldpagetable = p->pagetable;
   p->pagetable = pagetable;
@@ -119,6 +125,7 @@ exec(char *path, char **argv)
   return argc; // this ends up in a0, the first argument to main(argc, argv)
 
  bad:
+  // printf("exec bad\n");
   if(pagetable)
     proc_freepagetable(pagetable, sz);
   if(ip){
@@ -140,7 +147,7 @@ loadseg(pagetable_t pagetable, uint64 va, struct inode *ip, uint offset, uint sz
 
   if((va % PGSIZE) != 0)
     panic("loadseg: va must be page aligned");
-
+  
   for(i = 0; i < sz; i += PGSIZE){
     pa = walkaddr(pagetable, va + i);
     if(pa == 0)
@@ -152,6 +159,6 @@ loadseg(pagetable_t pagetable, uint64 va, struct inode *ip, uint offset, uint sz
     if(readi(ip, 0, (uint64)pa, offset+i, n) != n)
       return -1;
   }
-  
+
   return 0;
 }
