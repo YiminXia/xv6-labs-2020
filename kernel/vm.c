@@ -105,7 +105,7 @@ walkaddr(pagetable_t pagetable, uint64 va)
     return 0;
 
   pte = walk(pagetable, va, 0);
-  if((*pte & PTE_RSW)){
+  if((pte != 0) && (*pte & PTE_RSW)){
     if(va >= p->sz)
       return 0;
     uint64 down_va = PGROUNDDOWN(va);
@@ -115,10 +115,16 @@ walkaddr(pagetable_t pagetable, uint64 va)
       p->killed = 1;
       return 0;
     }
+    pa = PTE2PA(*pte);
+    memmove(mem, (char*)pa, PGSIZE);
+    //memmove之后,设置PTE_W|~PTE_RSW
     uint flags = (PTE_FLAGS(*pte) | PTE_W) & (~PTE_RSW);
-    memset(mem, 0, PGSIZE);
-    // printf("flags:%d\n", flags);
     *pte = 0;
+    
+    // int rc = getrc((uint64)pa);
+    // setrc((uint64)pa, rc-1);
+    kfree((void*)pa);
+
     if(mappages(pagetable, down_va, PGSIZE, (uint64)mem, flags) != 0){
       kfree(mem);
       printf("walkaddr: mappages return failed\n");

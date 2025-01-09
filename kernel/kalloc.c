@@ -86,6 +86,7 @@ kfree(void *pa)
     return;
   }
 
+  setrc((uint64)pa, 0);
   // Fill with junk to catch dangling refs.
   memset(pa, 1, PGSIZE);
 

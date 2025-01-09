@@ -65,9 +65,9 @@ usertrap(void)
     intr_on();
 
     syscall();
-  } else if( r_scause() == 15 ) {
-    printf("usertrap(): page fault scause %p pid=%d\n", r_scause(), p->pid);
-    printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
+  } else if( r_scause() == 15 || r_scause() == 13) {
+    // printf("usertrap(): page fault scause %p pid=%d\n", r_scause(), p->pid);
+    // printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
     uint64 va = r_stval();
     if(va >= p->sz ){
       printf("usertrap(): va >= p->sz or va < p->trapframe->sp kill the pthread\n");
@@ -82,13 +82,16 @@ usertrap(void)
       goto err_exit;
     }
 
-    printf("usertrap(): *pte:%d\n", *pte);
+    // printf("usertrap(): *pte:%d\n", *pte);
     if((*pte & PTE_RSW) == 0){
       // uint64 down_va = PGROUNDDOWN(va);
       // char* mem = kalloc();
-      printf("usertrap(): (*pte & PTE_RSW) == 0\n");
+      if(va < p->trapframe->sp){
+        // printf("usertrap(): (*pte & PTE_RSW) == 0\n");
+        p->killed = 1;
+        goto err_exit;
+      }
     } else if(((*pte & PTE_W) == 0) && (*pte & PTE_RSW)) {
-      printf("usertrap(): (*pte & PTE_W) == 0, *pte:%d\n", *pte);
       uint64 pa;
       uint flags;
       uint64 down_va = PGROUNDDOWN(va);
@@ -100,11 +103,13 @@ usertrap(void)
       }
       pa = PTE2PA(*pte);
       memmove(mem, (char*)pa, PGSIZE);
-      //copy之后,设置PTE_W|~PTE_RSW
+      //memmove之后,设置PTE_W|~PTE_RSW
       flags = (PTE_FLAGS(*pte) | PTE_W) & (~PTE_RSW);
       *pte = 0;
-      // printf("flags:%d\n", flags);
-      // uvmunmap(p->pagetable, PGROUNDDOWN(va), 1, 0);
+      // int rc = getrc((uint64)pa);
+      // setrc((uint64)pa, rc-1);
+      kfree((void*)pa);
+      
       if(mappages(p->pagetable, down_va, PGSIZE, (uint64)mem, flags) != 0){
         kfree(mem);
         panic("usertrap: mappages get failed");
