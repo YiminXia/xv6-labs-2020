@@ -33,12 +33,6 @@ kinit()
   freerange(end, (void*)PHYSTOP);
 }
 
-uint64
-getrcIndex(uint64 pa){
-  uint64 index = (pa - baserc)/PGSIZE;
-  return index;
-}
-
 int
 getrc(uint64 pa){
   uint64 index = (pa - baserc)/PGSIZE;
@@ -59,9 +53,6 @@ freerange(void *pa_start, void *pa_end)
   baserc = (uint64)p;
   
   for(; p + PGSIZE <= (char*)pa_end; p += PGSIZE){
-    // uint64 index = getrcIndex((uint64)p);
-    // printf("index:%d\n", index);
-    // refcount[index] = 0;
     setrc((uint64)p, 0);
     kfree(p);
   }
@@ -80,9 +71,11 @@ kfree(void *pa)
   if(((uint64)pa % PGSIZE) != 0 || (char*)pa < end || (uint64)pa >= PHYSTOP)
     panic("kfree");
 
+  acquire(&kmem.lock);
   rc = getrc((uint64)pa);
   if(rc > 1){
     setrc((uint64)pa, rc-1);
+    release(&kmem.lock);
     return;
   }
 
@@ -92,7 +85,7 @@ kfree(void *pa)
 
   r = (struct run*)pa;
 
-  acquire(&kmem.lock);
+  // acquire(&kmem.lock);
   r->next = kmem.freelist;
   kmem.freelist = r;
   release(&kmem.lock);

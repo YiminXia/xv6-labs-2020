@@ -63,7 +63,6 @@ void            ramdiskrw(struct buf*);
 void*           kalloc(void);
 void            kfree(void *);
 void            kinit(void);
-uint64          getrcIndex(uint64 pa);
 int             getrc(uint64 pa);
 void            setrc(uint64 pa, int rc);
 
