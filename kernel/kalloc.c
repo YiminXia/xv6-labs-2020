@@ -18,15 +18,21 @@ struct run {
   struct run *next;
 };
 
-struct {
+typedef struct {
   struct spinlock lock;
   struct run *freelist;
 } kmem;
 
+kmem cpuskmem[NCPU];
+
 void
 kinit()
 {
-  initlock(&kmem.lock, "kmem");
+  // initlock(&kmem.lock, "kmem");
+  for(int i = 0; i < NCPU; i++){
+    cpuskmem[i].freelist = 0;
+    initlock(&cpuskmem[i].lock, "kmem");
+  }
   freerange(end, (void*)PHYSTOP);
 }
 
@@ -35,8 +41,14 @@ freerange(void *pa_start, void *pa_end)
 {
   char *p;
   p = (char*)PGROUNDUP((uint64)pa_start);
-  for(; p + PGSIZE <= (char*)pa_end; p += PGSIZE)
-    kfree(p);
+  int counter = 0;
+  for(; p + PGSIZE <= (char*)pa_end; p += PGSIZE){
+    memset(p, 1, PGSIZE);
+    struct run* r = (struct run*)p;
+    int index = counter % NCPU;
+    r->next = cpuskmem[index].freelist;
+    cpuskmem[index].freelist = r;
+  }
 }
 
 // Free the page of physical memory pointed at by v,
@@ -56,10 +68,14 @@ kfree(void *pa)
 
   r = (struct run*)pa;
 
-  acquire(&kmem.lock);
-  r->next = kmem.freelist;
-  kmem.freelist = r;
-  release(&kmem.lock);
+  push_off();
+  int hart = cpuid();
+  pop_off();
+
+  acquire(&cpuskmem[hart].lock);
+  r->next = cpuskmem[hart].freelist;
+  cpuskmem[hart].freelist = r;
+  release(&cpuskmem[hart].lock);
 }
 
 // Allocate one 4096-byte page of physical memory.
@@ -68,15 +84,45 @@ kfree(void *pa)
 void *
 kalloc(void)
 {
+  // struct run *r;
+
+  // acquire(&kmem.lock);
+  // r = kmem.freelist;
+  // if(r)
+  //   kmem.freelist = r->next;
+  // release(&kmem.lock);
+
+  // if(r)
+  //   memset((char*)r, 5, PGSIZE); // fill with junk
+  // return (void*)r;
+
   struct run *r;
 
-  acquire(&kmem.lock);
-  r = kmem.freelist;
-  if(r)
-    kmem.freelist = r->next;
-  release(&kmem.lock);
+  push_off();
+  int hart = cpuid();
+  pop_off();
 
+  acquire(&cpuskmem[hart].lock);
+  r = cpuskmem[hart].freelist;
   if(r)
-    memset((char*)r, 5, PGSIZE); // fill with junk
+    cpuskmem[hart].freelist = r->next;
+  release(&cpuskmem[hart].lock);
+
+  if(r){
+    memset((char*)r, 5, PGSIZE);
+    return (void*)r;
+  } else {
+    for(int i = 0; i < NCPU; i++){
+      acquire(&cpuskmem[i].lock);
+      r = cpuskmem[i].freelist;
+      if(r)
+        cpuskmem[i].freelist = r->next;
+      release(&cpuskmem[i].lock);
+      if(r){
+        memset((char*)r, 5, PGSIZE);
+        return (void*)r;
+      }
+    }
+  }
   return (void*)r;
 }
