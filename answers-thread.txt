@@ -1,0 +1,2 @@
+because two threads may calls the insert() function at the same time.this will result in struct entry* ptr loss.
+假设两个线程同时调用insert()函数，而insert()使用典型的头插法，此时谁先调用*p = e;语句谁就会丢失，都是因为没加锁导致的。
